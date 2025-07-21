@@ -1,0 +1,29 @@
+{
+  "name": "mcp-postgres",
+  "version": "1.0.0",
+  "description": "A Model Context Protocol (MCP) server providing secure, read-only access to PostgreSQL databases. Features   secret-based authentication for web deployment, supports both CLI and HTTP modes, and integrates seamlessly with   Claude Web's custom connector feature. All queries run in read-only transactions to prevent data modification.",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "mcp-server-postgres": "dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc && shx chmod +x dist/*.js",
+    "prepare": "npm run build",
+    "watch": "tsc --watch",
+    "start": "node dist/index.js",
+    "start:http": "MCP_HTTP_MODE=true node dist/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.0.1",
+    "pg": "^8.13.0"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.11.10",
+    "shx": "^0.3.4",
+    "typescript": "^5.6.2"
+  }
+}
