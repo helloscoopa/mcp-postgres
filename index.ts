@@ -15,6 +15,7 @@ import pkg from "pg";
 const { Pool } = pkg;
 import type { Pool as PoolType } from "pg";
 
+
 const server = new Server(
   {
     name: "example-servers/postgres",
@@ -95,8 +96,11 @@ const SCHEMA_PATH = "schema";
 
 server.setRequestHandler(ListResourcesRequestSchema, async (request) => {
   const requestDbUrl = extractDatabaseUrlFromRequest(request);
-  const databaseUrl = requestDbUrl || getDatabaseUrl();
-  initializeDatabase(databaseUrl);
+  if (requestDbUrl) {
+    initializeDatabase(requestDbUrl);
+  } else if (!pool) {
+    throw new Error("No database connection available. Database URL should be provided via SSE connection.");
+  }
   
   const client = await pool!.connect();
   try {
@@ -117,8 +121,11 @@ server.setRequestHandler(ListResourcesRequestSchema, async (request) => {
 
 server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
   const requestDbUrl = extractDatabaseUrlFromRequest(request);
-  const databaseUrl = requestDbUrl || getDatabaseUrl();
-  initializeDatabase(databaseUrl);
+  if (requestDbUrl) {
+    initializeDatabase(requestDbUrl);
+  } else if (!pool) {
+    throw new Error("No database connection available. Database URL should be provided via SSE connection.");
+  }
   
   const resourceUrl = new URL(request.params.uri);
 
@@ -176,8 +183,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   if (request.params.name === "query") {
     const requestDbUrl = extractDatabaseUrlFromRequest(request);
-    const databaseUrl = requestDbUrl || getDatabaseUrl();
-    initializeDatabase(databaseUrl);
+    if (requestDbUrl) {
+      initializeDatabase(requestDbUrl);
+    } else if (!pool) {
+      throw new Error("No database connection available. Database URL should be provided via SSE connection.");
+    }
     
     const sql = request.params.arguments?.sql as string;
     
@@ -224,6 +234,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 // Store active transports for cleanup
 const activeTransports = new Map<string, SSEServerTransport>();
 const transportPermissions = new Map<string, Permission[]>();
+const transportDatabaseUrls = new Map<string, string>();
 
 function parsePermissions(queryParams: URLSearchParams): Permission[] {
   const permissionsParam = queryParams.get('permissions');
@@ -331,7 +342,63 @@ async function handleHttpRequest(req: IncomingMessage, res: ServerResponse) {
     }
   }
   
-  // Extract database URL and permissions from query parameters
+  // Handle message posting first (doesn't need database URL extraction)
+  if (req.method === 'POST' && url.pathname === '/message') {
+    // Set CORS headers
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    
+    // Find the appropriate transport by session ID if provided
+    const sessionId = url.searchParams.get('sessionId');
+    if (sessionId) {
+      for (const [transportId, transport] of activeTransports.entries()) {
+        if (transport.sessionId === sessionId) {
+          // Update currentPermissions and database connection for this specific transport
+          const storedPermissions = transportPermissions.get(transportId);
+          const storedDatabaseUrl = transportDatabaseUrls.get(transportId);
+          if (storedPermissions) {
+            currentPermissions = storedPermissions;
+          }
+          if (storedDatabaseUrl) {
+            initializeDatabase(storedDatabaseUrl);
+          }
+          await transport.handlePostMessage(req, res);
+          return;
+        }
+      }
+    }
+    
+    // If sessionId was provided but not found, return error
+    if (sessionId) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid session ID' }));
+      return;
+    }
+    
+    // If no session ID provided, try the first available transport as fallback
+    const transports = Array.from(activeTransports.entries());
+    if (transports.length > 0) {
+      const [transportId, transport] = transports[0];
+      // Update currentPermissions and database connection for this specific transport
+      const storedPermissions = transportPermissions.get(transportId);
+      const storedDatabaseUrl = transportDatabaseUrls.get(transportId);
+      if (storedPermissions) {
+        currentPermissions = storedPermissions;
+      }
+      if (storedDatabaseUrl) {
+        initializeDatabase(storedDatabaseUrl);
+      }
+      await transport.handlePostMessage(req, res);
+      return;
+    }
+    
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'No active MCP session found' }));
+    return;
+  }
+  
+  // For all other endpoints, extract database URL and permissions from query parameters
   let databaseUrl: string;
   let permissions: Permission[];
   
@@ -367,58 +434,29 @@ async function handleHttpRequest(req: IncomingMessage, res: ServerResponse) {
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
     
+    // Ensure we have database URL and permissions (should be extracted above)
+    if (!databaseUrl || !permissions) {
+      res.writeHead(400, { 
+        'Content-Type': 'application/json',
+        'Access-Control-Allow-Origin': '*'
+      });
+      res.end(JSON.stringify({ error: 'Database URL and permissions required for SSE connection' }));
+      return;
+    }
+    
     const transport = new SSEServerTransport('/message', res);
-    const transportId = Math.random().toString(36).substr(2, 9);
+    const transportId = Math.random().toString(36).substring(2, 11);
     activeTransports.set(transportId, transport);
     transportPermissions.set(transportId, permissions);
+    transportDatabaseUrls.set(transportId, databaseUrl);
     
     transport.onclose = () => {
       activeTransports.delete(transportId);
       transportPermissions.delete(transportId);
+      transportDatabaseUrls.delete(transportId);
     };
     
     await server.connect(transport);
-    return;
-  }
-  
-  // Handle message posting
-  if (req.method === 'POST' && url.pathname === '/message') {
-    // Set CORS headers
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-    
-    // Find the appropriate transport by session ID if provided
-    const sessionId = url.searchParams.get('sessionId');
-    if (sessionId) {
-      for (const [transportId, transport] of activeTransports.entries()) {
-        if (transport.sessionId === sessionId) {
-          // Update currentPermissions for this specific transport
-          const storedPermissions = transportPermissions.get(transportId);
-          if (storedPermissions) {
-            currentPermissions = storedPermissions;
-          }
-          await transport.handlePostMessage(req, res);
-          return;
-        }
-      }
-    }
-    
-    // If no session ID or transport found, try the first available transport
-    const transports = Array.from(activeTransports.entries());
-    if (transports.length > 0) {
-      const [transportId, transport] = transports[0];
-      // Update currentPermissions for this specific transport
-      const storedPermissions = transportPermissions.get(transportId);
-      if (storedPermissions) {
-        currentPermissions = storedPermissions;
-      }
-      await transport.handlePostMessage(req, res);
-      return;
-    }
-    
-    res.writeHead(404, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'No active MCP session found' }));
     return;
   }
   
@@ -450,7 +488,7 @@ async function runServer() {
     const httpServer = createServer(handleHttpRequest);
     
     httpServer.listen(port, () => {
-      console.log(`MCP HTTP server running on port ${port}`);
+      console.log(`MCP HTTP server running at http://localhost:${port}`);
       console.log(`SSE endpoint: http://localhost:${port}/sse`);
       console.log(`Health check: http://localhost:${port}/health`);
       if (process.env.DATABASE_URL) {
