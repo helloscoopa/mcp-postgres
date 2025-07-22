@@ -176,6 +176,20 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           required: ["sql"]
         },
       },
+      {
+        name: "schema",
+        description: "Get database schema information including all tables and their columns",
+        inputSchema: {
+          type: "object",
+          properties: {
+            table_name: { 
+              type: "string", 
+              description: "Optional: Get schema for a specific table only" 
+            },
+          },
+          required: []
+        },
+      },
     ],
   };
 });
@@ -222,6 +236,98 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       await client.query("ROLLBACK").catch(() => {});
       return {
         content: [{ type: "text", text: `SQL Error: ${error.message}` }],
+        isError: true,
+      };
+    } finally {
+      client.release();
+    }
+  } else if (request.params.name === "schema") {
+    const requestDbUrl = extractDatabaseUrlFromRequest(request);
+    if (requestDbUrl) {
+      initializeDatabase(requestDbUrl);
+    } else if (!pool) {
+      throw new Error("No database connection available. Database URL should be provided via SSE connection.");
+    }
+    
+    const tableName = request.params.arguments?.table_name as string | undefined;
+    
+    const client = await pool!.connect();
+    try {
+      await client.query("BEGIN TRANSACTION READ ONLY");
+      
+      let schemaInfo: any = {};
+      
+      if (tableName) {
+        // Get schema for specific table
+        const columnsResult = await client.query(`
+          SELECT 
+            column_name,
+            data_type,
+            is_nullable,
+            column_default,
+            character_maximum_length,
+            numeric_precision,
+            numeric_scale
+          FROM information_schema.columns 
+          WHERE table_name = $1 AND table_schema = 'public'
+          ORDER BY ordinal_position
+        `, [tableName]);
+        
+        if (columnsResult.rows.length === 0) {
+          return {
+            content: [{ type: "text", text: `Table '${tableName}' not found in public schema` }],
+            isError: true,
+          };
+        }
+        
+        schemaInfo = {
+          table: tableName,
+          columns: columnsResult.rows
+        };
+      } else {
+        // Get schema for all tables
+        const tablesResult = await client.query(`
+          SELECT table_name 
+          FROM information_schema.tables 
+          WHERE table_schema = 'public' 
+          ORDER BY table_name
+        `);
+        
+        schemaInfo.tables = {};
+        
+        for (const tableRow of tablesResult.rows) {
+          const currentTableName = tableRow.table_name;
+          
+          const columnsResult = await client.query(`
+            SELECT 
+              column_name,
+              data_type,
+              is_nullable,
+              column_default,
+              character_maximum_length,
+              numeric_precision,
+              numeric_scale
+            FROM information_schema.columns 
+            WHERE table_name = $1 AND table_schema = 'public'
+            ORDER BY ordinal_position
+          `, [currentTableName]);
+          
+          schemaInfo.tables[currentTableName] = {
+            columns: columnsResult.rows
+          };
+        }
+      }
+      
+      await client.query("COMMIT");
+      
+      return {
+        content: [{ type: "text", text: JSON.stringify(schemaInfo, null, 2) }],
+        isError: false,
+      };
+    } catch (error: any) {
+      await client.query("ROLLBACK").catch(() => {});
+      return {
+        content: [{ type: "text", text: `Schema Error: ${error.message}` }],
         isError: true,
       };
     } finally {
