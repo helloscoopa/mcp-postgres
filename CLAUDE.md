@@ -4,10 +4,33 @@ This document contains development instructions for the PostgreSQL MCP server.
 
 ## Project Structure
 
-- `index.ts` - Main server implementation
-- `package.json` - Dependencies and scripts
-- `tsconfig.json` - TypeScript configuration
-- `Dockerfile` - Docker build configuration
+The codebase follows a modular architecture for better maintainability:
+
+```
+src/postgres/
+├── index.ts              # Main entry point and server initialization
+├── types.ts              # TypeScript type definitions and interfaces
+├── database.ts           # Database connection management and utilities
+├── server.ts             # HTTP server logic and SSE transport handling
+├── handlers/
+│   ├── resources.ts      # MCP resource handlers (ListResources, ReadResource)
+│   └── tools.ts          # MCP tool handlers (query, schema tools)
+├── utils/
+│   └── permissions.ts    # Permission parsing and SQL validation
+├── package.json          # Dependencies and build scripts
+├── tsconfig.json         # TypeScript configuration
+└── Dockerfile            # Docker build configuration
+```
+
+### Module Responsibilities
+
+- **index.ts**: Server initialization and handler registration
+- **types.ts**: Type definitions for Permission, DatabaseState, TransportInfo
+- **database.ts**: Connection pooling, URL extraction, database initialization
+- **server.ts**: HTTP request handling, SSE transport management, CORS
+- **handlers/resources.ts**: Table schema resource endpoints
+- **handlers/tools.ts**: Query execution and schema inspection tools
+- **utils/permissions.ts**: Permission validation and SQL operation filtering
 
 ## Development Commands
 
@@ -40,17 +63,32 @@ The server supports multiple configuration methods (in order of precedence):
 3. Environment variable (`DATABASE_URL`)
 
 ### Security Implementation
-- All database queries run within `BEGIN TRANSACTION READ ONLY` (index.ts:174)
-- Automatic transaction rollback after each query (index.ts:185-189)
-- Connection pooling with proper cleanup
-- No exposed destructive operations
+- Read-only transactions by default for read permissions (handlers/tools.ts)
+- Smart transaction handling based on permission level
+- Automatic transaction rollback on errors
+- Connection pooling with proper cleanup (database.ts)
+- SQL operation validation against granted permissions (utils/permissions.ts)
+- No exposed destructive operations without explicit permissions
 
-### Key Functions
+### Key Functions by Module
+
+**database.ts**:
 - `initializeDatabase()` - Sets up database connection pool
 - `extractDatabaseUrlFromRequest()` - Extracts DB URL from MCP requests
 - `getDatabaseUrl()` - Resolves database URL from various sources
+
+**utils/permissions.ts**:
 - `parsePermissions()` - Parses and validates permission parameters
 - `validateSqlPermissions()` - Validates SQL queries against granted permissions
+- `validateSecret()` - Authenticates HTTP mode requests
+
+**handlers/tools.ts**:
+- Query tool handler - Executes SQL with permission validation
+- Schema tool handler - Returns database schema information
+
+**server.ts**:
+- `handleHttpRequest()` - Main HTTP request router
+- `startHttpServer()` - HTTP server initialization
 
 ## Testing
 
@@ -64,6 +102,21 @@ docker run -d --name test-postgres -e POSTGRES_PASSWORD=test -p 5432:5432 postgr
 npm run build
 node dist/index.js "postgresql://postgres:test@localhost:5432/postgres"
 ```
+
+### Testing the Schema Tool
+
+The server now includes a `schema` tool for database inspection:
+
+```bash
+# Test schema tool via MCP (requires MCP client)
+# Get all tables and columns:
+{"tool": "schema"}
+
+# Get specific table schema:
+{"tool": "schema", "arguments": {"table_name": "users"}}
+```
+
+This tool enables AI agents to understand database structure before writing queries, improving query accuracy and reducing errors.
 
 ### HTTP Mode Testing
 
@@ -128,10 +181,10 @@ curl "http://localhost:3000/sse?secret=test-secret-123&permissions=read,ddl,dml"
 - **Secret validation**: SSE endpoint requires `?secret=<token>` parameter for connection establishment
 - **Session-based protection**: Message endpoint is protected by session ID from authenticated SSE connections
 - **Permission-based access**: `permissions` parameter controls allowed SQL operations
-- **SQL operation validation**: `validateSqlPermissions()` function blocks unauthorized queries
+- **SQL operation validation**: `validateSqlPermissions()` function blocks unauthorized queries (utils/permissions.ts)
 - **Access control**: Invalid/missing secrets return 401 Unauthorized
-- **Function reference**: `validateSecret()` function handles authentication (index.ts:274-281)
-- **Error handling**: Proper CORS headers on all error responses
+- **Function reference**: `validateSecret()` function handles authentication (utils/permissions.ts)
+- **Error handling**: Proper CORS headers on all error responses (server.ts)
 
 ## Common Issues
 

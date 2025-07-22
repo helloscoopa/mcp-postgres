@@ -15,6 +15,17 @@ A Model Context Protocol server that provides read-only access to PostgreSQL dat
     - `dml`: Data Manipulation Language (INSERT, UPDATE, DELETE, etc.)
   - Multiple permissions can be combined (e.g., `read,dml`)
 
+- **schema**
+  - Get comprehensive database schema information for all tables and their columns
+  - Input: `table_name` (string, optional): Get schema for a specific table only
+  - Returns detailed column information including:
+    - Column names and data types
+    - Nullable constraints
+    - Default values
+    - Character limits and numeric precision
+  - When no table specified, returns schema for all tables in the public schema
+  - Enables AI agents to understand database structure before writing queries
+
 ### Resources
 
 The server provides schema information for each table in the database:
@@ -194,6 +205,37 @@ Optionally, you can add it to a file called `.vscode/mcp.json` in your workspace
   }
 }
 ```
+
+## Architecture
+
+This server features a clean, modular architecture for maintainability and extensibility:
+
+```
+src/postgres/
+├── index.ts              # Main entry point and server setup
+├── types.ts              # TypeScript type definitions
+├── database.ts           # Database connection management
+├── server.ts             # HTTP server and transport handling
+├── handlers/
+│   ├── resources.ts      # MCP resource handlers
+│   └── tools.ts          # MCP tool handlers (query & schema)
+└── utils/
+    └── permissions.ts    # Permission validation and parsing
+```
+
+### Key Modules
+
+- **types.ts**: Centralized type definitions for permissions and database state
+- **database.ts**: Database connection pooling and URL resolution logic
+- **handlers/**: Separated request handlers for resources and tools
+- **utils/**: Utility functions for permissions and validation
+- **server.ts**: HTTP server logic with SSE transport management
+
+This modular design makes the codebase easier to:
+- Maintain and debug individual components
+- Test modules in isolation
+- Extend with new functionality
+- Understand and contribute to
 
 ## Building
 
